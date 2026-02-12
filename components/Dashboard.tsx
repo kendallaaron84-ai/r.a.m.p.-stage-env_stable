@@ -190,7 +190,9 @@ export const Dashboard: React.FC<DashboardProps> = ({ shifts, employees, timeLog
                      </div>
                      <div className="flex flex-wrap gap-2 mt-2 ml-4">
                         {shift.modules?.map((mod: any) => (
-                           <div key={mod.id} className="text-[8px] bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 px-2 py-0.5 rounded font-bold uppercase border dark:border-blue-800">{mod.name}</div>
+                           <div key={mod.id} className="text-[8px] bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 px-2 py-0.5 rounded font-bold uppercase border dark:border-blue-800">
+                             {mod.name} <span className="text-gray-500 dark:text-gray-400 font-normal ml-1">({mod.plannedStart} - {mod.plannedEnd})</span>
+                           </div>
                         ))}
                      </div>
                    </div>

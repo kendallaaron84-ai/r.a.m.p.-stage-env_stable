@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { AppState, UserRole, Employee, Shift, ShiftModule, TimeLog, TravelRequest } from '../types'; 
 import { db } from '../firebase';
 import { doc, updateDoc, setDoc, deleteDoc } from 'firebase/firestore'; 
-import { Check, X, Download, Users, Calendar, DollarSign, Plus, Save, Edit2, Settings, Mail, Trash2, Briefcase, Plane } from 'lucide-react';
+import { Check, X, Download, Users, Calendar, DollarSign, Plus, Save, Edit2, Settings, Mail, Trash2, Briefcase, Plane, FileText, Paperclip } from 'lucide-react';
 
 interface AdminProps {
   state: AppState;
@@ -40,23 +40,23 @@ export const Admin: React.FC<AdminProps> = ({ state, currentUserEmail, role }) =
         const financialRef = doc(db, 'system', 'financials');
         let spendToAdd = 0;
 
-        // A. Handle Time Logs
+        // A. Handle Time Logs (Bundled Labor + Expenses)
         if (collectionName === 'timeLogs') {
           const log = state.timeLogs.find(l => l.id === id);
           if (log) {
-            const staffMember = state.employees.find(e => e.id === log.employeeId);
-            
-            if (staffMember) {
-              // Priority: Log totalCost > Wage > Budget/FTE
-              if (log.totalCost) {
-                spendToAdd = log.totalCost;
-              } else {
+            // 1. Calculate Labor
+            if (log.totalCost) {
+               spendToAdd += log.totalCost;
+            } else {
+               // Fallback if totalCost missing
+               const staffMember = state.employees.find(e => e.id === log.employeeId);
+               if (staffMember) {
                  const rate = staffMember.wage > 0 ? staffMember.wage : (staffMember.plannedProgramBudget / (staffMember.fteOperationalHours || 1));
-                 spendToAdd = (log.actualHours * rate);
-              }
-              // Add expenses
-              spendToAdd += (log.equipmentCost || 0) + (log.suppliesCost || 0);
+                 spendToAdd += (log.actualHours * rate);
+               }
             }
+            // 2. Add Expenses (Even if Labor was 0)
+            spendToAdd += (log.equipmentCost || 0) + (log.suppliesCost || 0);
           }
         }
         
@@ -64,13 +64,12 @@ export const Admin: React.FC<AdminProps> = ({ state, currentUserEmail, role }) =
         if (collectionName === 'travelRequests') {
           const travel = state.travelRequests.find(t => t.id === id);
           if (travel && travel.totalReimbursement) {
-            spendToAdd = travel.totalReimbursement;
+            spendToAdd += travel.totalReimbursement;
           }
         }
 
         // C. Update Financials
         if (spendToAdd > 0) {
-          // Note: In production, use increment()
           await updateDoc(financialRef, {
             totalActualSpend: ((state as any).totalActualSpend || 0) + spendToAdd
           });
@@ -85,7 +84,6 @@ export const Admin: React.FC<AdminProps> = ({ state, currentUserEmail, role }) =
   const handleAddUser = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newUser.email || !newUser.firstName) return alert("Missing required fields");
-    
     try {
       await setDoc(doc(db, 'employees', newUser.email), {
         ...newUser,
@@ -95,9 +93,7 @@ export const Admin: React.FC<AdminProps> = ({ state, currentUserEmail, role }) =
       });
       setNewUser({ firstName: '', lastName: '', email: '', role: 'EMPLOYEE' as UserRole, wage: 0, companyName: '' });
       alert("Member added successfully!");
-    } catch (error) {
-      console.error("Error adding user:", error);
-    }
+    } catch (error) { console.error("Error adding user:", error); }
   };
 
   const saveEmpEdit = async () => {
@@ -147,23 +143,11 @@ export const Admin: React.FC<AdminProps> = ({ state, currentUserEmail, role }) =
     window.open(encodeURI(csvContent));
   };
 
-  // --- APPROVAL FILTERS ---
   const isManager = role === 'MANAGER';
   const isAdmin = role === 'ADMIN' || role === 'MASTER_ADMIN';
 
-  // 1. Time Logs
-  const pendingLogs = state.timeLogs.filter(l => {
-    if (isAdmin) return l.status === 'Pending' || l.status === 'Pending Manager';
-    if (isManager) return l.status === 'Pending Manager';
-    return false;
-  });
-
-  // 2. Travel Requests (CLEANED)
-  const pendingTravels = state.travelRequests.filter(r => {
-    if (isAdmin) return r.status === 'Pending' || r.status === 'Pending Manager';
-    if (isManager) return r.status === 'Pending Manager';
-    return false;
-  });
+  const pendingLogs = state.timeLogs.filter(l => isAdmin ? (l.status === 'Pending' || l.status === 'Pending Manager') : isManager ? l.status === 'Pending Manager' : false);
+  const pendingTravels = state.travelRequests.filter(r => isAdmin ? (r.status === 'Pending' || r.status === 'Pending Manager') : isManager ? r.status === 'Pending Manager' : false);
 
   return (
     <div className="max-w-7xl mx-auto space-y-6 pb-20">
@@ -180,41 +164,69 @@ export const Admin: React.FC<AdminProps> = ({ state, currentUserEmail, role }) =
       {activeTab === 'approvals' && (
         <div className="space-y-6">
           
-          {/* TIME LOGS SECTION */}
+          {/* TIME LOGS & EXPENSES */}
           <div className="bg-white dark:bg-ramp-surface p-6 rounded shadow">
-             <h3 className="font-bold mb-4 dark:text-white uppercase text-xs tracking-widest text-ramp-gold">Pending Time Logs</h3>
-             {pendingLogs.length === 0 && <p className="text-gray-400 italic">No pending time logs.</p>}
+             <h3 className="font-bold mb-4 dark:text-white uppercase text-xs tracking-widest text-ramp-gold flex items-center gap-2">
+               <FileText size={16}/> Pending Timesheets & Expenses
+             </h3>
+             {pendingLogs.length === 0 && <p className="text-gray-400 italic">No pending requests.</p>}
              {pendingLogs.map(l => (
-               <div key={l.id} className="flex justify-between items-center p-3 border-b dark:border-gray-700">
-                 <div>
-                    <p className="font-bold dark:text-white">{l.weekEnding} - {state.employees.find(e=>e.id===l.employeeId)?.firstName}</p>
-                    <p className="text-xs text-gray-500">Hours: {l.actualHours} | Category: {l.budgetCategory}</p>
+               <div key={l.id} className="flex flex-col md:flex-row justify-between items-start md:items-center p-4 border-b dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors">
+                 <div className="space-y-1 mb-2 md:mb-0">
+                    <div className="flex items-center gap-2">
+                       <p className="font-bold dark:text-white">{state.employees.find(e=>e.id===l.employeeId)?.firstName} {state.employees.find(e=>e.id===l.employeeId)?.lastName}</p>
+                       <span className="text-[10px] bg-gray-100 dark:bg-gray-800 text-gray-500 px-2 py-0.5 rounded uppercase">{l.budgetCategory}</span>
+                    </div>
+                    <p className="text-xs text-gray-500 font-mono">Week Ending: {l.weekEnding}</p>
+                    
+                    {/* VISIBLE EXPENSES */}
+                    <div className="flex flex-wrap gap-2 mt-2">
+                       <span className="text-xs bg-blue-50 text-blue-700 px-2 py-1 rounded font-bold border border-blue-100">
+                          Hours: {l.actualHours}
+                       </span>
+                       {(l.equipmentCost || 0) > 0 && (
+                          <a href={l.equipmentReceiptUrl} target="_blank" rel="noreferrer" className="text-xs bg-purple-50 text-purple-700 px-2 py-1 rounded font-bold border border-purple-100 flex items-center gap-1 hover:underline">
+                            <Paperclip size={10}/> Equip: ${l.equipmentCost}
+                          </a>
+                       )}
+                       {(l.suppliesCost || 0) > 0 && (
+                          <a href={l.suppliesReceiptUrl} target="_blank" rel="noreferrer" className="text-xs bg-orange-50 text-orange-700 px-2 py-1 rounded font-bold border border-orange-100 flex items-center gap-1 hover:underline">
+                            <Paperclip size={10}/> Supplies: ${l.suppliesCost}
+                          </a>
+                       )}
+                    </div>
                  </div>
-                 <div className="flex gap-2">
-                   <button onClick={()=>handleApprove('timeLogs',l.id, isManager ? 'Pending' : 'Approved')} className="p-2 bg-green-500 text-white rounded"><Check size={16}/></button>
-                   <button onClick={()=>handleApprove('timeLogs',l.id,'Rejected')} className="p-2 bg-red-500 text-white rounded"><X size={16}/></button>
+                 <div className="flex gap-2 w-full md:w-auto">
+                   <button onClick={()=>handleApprove('timeLogs',l.id, isManager ? 'Pending' : 'Approved')} className="flex-1 md:flex-none px-4 py-2 bg-green-500 hover:bg-green-600 text-white rounded font-bold flex items-center justify-center gap-2"><Check size={16}/> Approve</button>
+                   <button onClick={()=>handleApprove('timeLogs',l.id,'Rejected')} className="flex-1 md:flex-none px-4 py-2 bg-red-500 hover:bg-red-600 text-white rounded font-bold flex items-center justify-center gap-2"><X size={16}/> Reject</button>
                  </div>
                </div>
              ))}
           </div>
 
-          {/* TRAVEL REQUESTS SECTION */}
-          <div className="bg-white dark:bg-ramp-surface p-6 rounded shadow border-l-4 border-blue-500 mt-6">
+          {/* TRAVEL REQUESTS */}
+          <div className="bg-white dark:bg-ramp-surface p-6 rounded shadow border-l-4 border-blue-500">
             <h3 className="font-bold mb-4 dark:text-white uppercase text-xs tracking-widest text-blue-500 flex items-center gap-2">
-              <Plane size={14}/> Pending Travel
+              <Plane size={16}/> Pending Travel
             </h3>
             {pendingTravels.length === 0 && <p className="text-gray-400 italic">No pending travel requests.</p>}
             {pendingTravels.map(t => (
-              <div key={t.id} className="flex justify-between items-center p-3 border-b dark:border-gray-700">
-                <div>
+              <div key={t.id} className="flex flex-col md:flex-row justify-between items-start md:items-center p-4 border-b dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800/50">
+                <div className="mb-2 md:mb-0">
                   <p className="font-bold dark:text-white">
-                    {t.weekEnding} - {state.employees.find(e => e.id === t.employeeId)?.firstName}
+                    {state.employees.find(e => e.id === t.employeeId)?.firstName} {state.employees.find(e => e.id === t.employeeId)?.lastName}
                   </p>
-                  <p className="text-xs text-gray-500">Total: ${t.totalReimbursement?.toFixed(2)}</p>
+                  <p className="text-xs text-gray-500 mb-2">Week: {t.weekEnding}</p>
+                  <div className="flex gap-2">
+                     <span className="text-xs bg-green-50 text-green-700 px-2 py-1 rounded font-bold border border-green-100">Total: ${t.totalReimbursement?.toFixed(2)}</span>
+                     {t.attachmentUrl && (
+                        <a href={t.attachmentUrl} target="_blank" rel="noreferrer" className="text-xs text-blue-500 underline flex items-center gap-1"><Paperclip size={10}/> View Receipt</a>
+                     )}
+                  </div>
                 </div>
-                <div className="flex gap-2">
-                  <button onClick={() => handleApprove('travelRequests', t.id, 'Approved')} className="p-2 bg-green-500 text-white rounded"><Check size={16}/></button>
-                  <button onClick={() => handleApprove('travelRequests', t.id, 'Rejected')} className="p-2 bg-red-500 text-white rounded"><X size={16}/></button>
+                <div className="flex gap-2 w-full md:w-auto">
+                  <button onClick={() => handleApprove('travelRequests', t.id, 'Approved')} className="flex-1 md:flex-none px-4 py-2 bg-green-500 hover:bg-green-600 text-white rounded font-bold flex items-center justify-center gap-2"><Check size={16}/> Approve</button>
+                  <button onClick={() => handleApprove('travelRequests', t.id, 'Rejected')} className="flex-1 md:flex-none px-4 py-2 bg-red-500 hover:bg-red-600 text-white rounded font-bold flex items-center justify-center gap-2"><X size={16}/> Reject</button>
                 </div>
               </div>
             ))}
@@ -241,6 +253,10 @@ export const Admin: React.FC<AdminProps> = ({ state, currentUserEmail, role }) =
                   <input value={newUser.email} onChange={e=>setNewUser({...newUser, email:e.target.value})} className="w-full p-2 bg-gray-50 dark:bg-black border border-gray-300 dark:border-gray-700 rounded dark:text-white" />
                 </div>
                 <div>
+                  <label className="text-[10px] font-bold text-gray-500 uppercase">Hourly Wage ($)</label>
+                  <input type="number" value={newUser.wage} onChange={e=>setNewUser({...newUser, wage: parseFloat(e.target.value)})} className="w-full p-2 bg-gray-50 dark:bg-black border border-gray-300 dark:border-gray-700 rounded dark:text-white" placeholder="0.00" />
+                </div>
+                <div>
                   <label className="text-[10px] font-bold text-gray-500 uppercase">Staffing Type</label>
                   <select value={newUser.role} onChange={e=>setNewUser({...newUser, role:e.target.value as UserRole})} className="w-full p-2 bg-gray-50 dark:bg-black border border-gray-300 dark:border-gray-700 rounded dark:text-white">
                     <option value="EMPLOYEE">Employee</option>
@@ -264,13 +280,13 @@ export const Admin: React.FC<AdminProps> = ({ state, currentUserEmail, role }) =
           </div>
         )}
 
+      {/* SCHEDULE TAB */}
       {activeTab === 'schedule' && (
         <div className="space-y-6">
            <button onClick={()=>setShowShiftModal(true)} className="bg-ramp-gold text-black px-6 py-2 rounded font-bold flex items-center gap-2"><Plus size={18} /> Add New Shift</button>
            {state.shifts.map(shift => (
               <div key={shift.id} className="bg-white dark:bg-ramp-surface p-6 rounded shadow border dark:border-gray-700">
                 {editingShift === shift.id ? (
-                  /* --- EDIT MODE --- */
                   <div className="space-y-4">
                     <div className="grid grid-cols-2 gap-4">
                        <div><label className="text-[10px] font-bold text-gray-500 uppercase">Name</label><input value={editShiftForm.name} onChange={e=>setEditShiftForm({...editShiftForm, name: e.target.value})} className="w-full p-2 bg-gray-50 dark:bg-black border border-gray-300 dark:border-gray-700 rounded dark:text-white" /></div>
@@ -280,7 +296,6 @@ export const Admin: React.FC<AdminProps> = ({ state, currentUserEmail, role }) =
                        <div><label className="text-[10px] font-bold text-gray-500 uppercase text-blue-500">Actual Start</label><input type="date" value={editShiftForm.actualStart || ''} onChange={e=>setEditShiftForm({...editShiftForm, actualStart: e.target.value})} className="w-full p-2 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded dark:text-white" /></div>
                        <div><label className="text-[10px] font-bold text-gray-500 uppercase text-blue-500">Actual End</label><input type="date" value={editShiftForm.actualEnd || ''} onChange={e=>setEditShiftForm({...editShiftForm, actualEnd: e.target.value})} className="w-full p-2 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded dark:text-white" /></div>
                     </div>
-
                     <div className="space-y-2 border-t dark:border-gray-800 pt-4">
                        <h4 className="font-bold text-xs text-ramp-gold">Modules</h4>
                        {editShiftForm.modules?.map((mod, idx) => (
@@ -308,7 +323,6 @@ export const Admin: React.FC<AdminProps> = ({ state, currentUserEmail, role }) =
                           setEditShiftForm({ ...editShiftForm, modules: m });
                        }} className="text-xs text-blue-500 hover:underline">+ Add Module</button>
                     </div>
-
                     <div className="flex justify-end gap-3 mt-4">
                       <button onClick={()=>setEditingShift(null)} className="px-4 py-2 text-gray-500 text-sm">Cancel</button>
                       <button onClick={saveShiftEdit} className="px-6 py-2 bg-green-500 text-white font-bold rounded flex items-center gap-2"><Save size={16}/> Save Changes</button>
@@ -319,14 +333,6 @@ export const Admin: React.FC<AdminProps> = ({ state, currentUserEmail, role }) =
                       <div>
                         <h3 className="font-bold dark:text-white">{shift.name}</h3>
                         <p className="text-xs text-gray-500">Planned: {shift.plannedStart} to {shift.plannedEnd}</p>
-                        {shift.actualStart && <p className="text-xs text-blue-500">Actual: {shift.actualStart} to {shift.actualEnd || 'Ongoing'}</p>}
-                        <div className="mt-2 space-y-1 border-t dark:border-gray-800 pt-2">
-                            {shift.modules?.map(m => (
-                              <p key={m.id} className="text-[10px] text-ramp-gold italic">
-                                • {m.name}: {m.plannedStart} to {m.plannedEnd}
-                              </p>
-                            ))}
-                        </div>
                       </div>
                       <div className="flex gap-4">
                         <button onClick={()=>{setEditingShift(shift.id); setEditShiftForm(shift);}} className="text-blue-500 hover:bg-blue-50 p-2 rounded"><Edit2 size={16}/></button>
@@ -340,65 +346,59 @@ export const Admin: React.FC<AdminProps> = ({ state, currentUserEmail, role }) =
       )}
 
       {/* BUDGET TAB */}
-        {activeTab === 'budget' && (
-          <div className="bg-white dark:bg-ramp-surface p-6 rounded shadow">
-            <h3 className="font-bold mb-4 dark:text-white uppercase text-xs tracking-widest text-ramp-gold">Budget Management</h3>
-            <table className="w-full text-sm text-left">
-              <thead className="bg-gray-100 dark:bg-gray-800 text-gray-500">
-                <tr><th>Name</th><th>SBA Cap ($)</th><th>FTE Hours</th><th>Action</th></tr>
-              </thead>
-              <tbody>
-                {state.employees.map(emp => {
-                  const isPartner = emp.role === 'INDUSTRY_PARTNER'; 
-                  return (
-                    <tr key={emp.id} className={`border-b dark:border-gray-700 ${isPartner ? 'bg-blue-50/30 dark:bg-blue-900/10' : ''}`}>
-                        <td className="p-2">
-                          <div className="font-bold dark:text-white">{emp.firstName} {emp.lastName}</div>
-                          {isPartner && (
-                            <div className="text-[9px] text-blue-500 font-bold uppercase flex items-center gap-1">
-                              <Briefcase size={10}/> {emp.companyName || 'External Partner'}
-                            </div>
-                          )}
-                        </td>
-                        
-                        {editingEmp === emp.id ? (
-                          <>
-                            <td className="p-2">
-                              {isPartner ? (
-                                <span className="text-xs text-gray-400 italic">Contractual (Locked)</span>
-                              ) : (
-                                <input type="number" value={editEmpForm.plannedProgramBudget} onChange={e=>setEditEmpForm({...editEmpForm, plannedProgramBudget: parseFloat(e.target.value)})} className="border p-1 w-24 text-black" />
-                              )}
-                            </td>
-                            <td className="p-2">
-                              {isPartner ? (
-                                <span className="text-xs text-gray-400 italic">N/A</span>
-                              ) : (
-                                <input type="number" value={editEmpForm.fteOperationalHours} onChange={e=>setEditEmpForm({...editEmpForm, fteOperationalHours: parseFloat(e.target.value)})} className="border p-1 w-24 text-black" />
-                              )}
-                            </td>
-                            <td className="p-2"><button onClick={saveEmpEdit} className="text-green-500"><Save size={16}/></button></td>
-                          </>
-                        ) : (
-                          <>
-                            <td className="p-2 dark:text-white font-bold">
-                              {isPartner ? (
-                                <span className="text-[10px] bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 px-2 py-1 rounded">CONTRACTUAL</span>
-                              ) : (
-                                `$${emp.plannedProgramBudget?.toLocaleString()}`
-                              )}
-                            </td>
-                            <td className="p-2 dark:text-white">{emp.fteOperationalHours}</td>
-                            <td className="p-2"><button onClick={()=>{setEditingEmp(emp.id); setEditEmpForm(emp)}} className="text-blue-500"><Edit2 size={16}/></button></td>
-                          </>
+      {activeTab === 'budget' && (
+        <div className="bg-white dark:bg-ramp-surface p-6 rounded shadow">
+          <h3 className="font-bold mb-4 dark:text-white uppercase text-xs tracking-widest text-ramp-gold">Budget Management</h3>
+          <table className="w-full text-sm text-left">
+            <thead className="bg-gray-100 dark:bg-gray-800 text-gray-500">
+              <tr><th>Name</th><th>SBA Cap ($)</th><th>FTE Hours</th><th>Hourly Wage ($)</th><th>Action</th></tr>
+            </thead>
+            <tbody>
+              {state.employees.map(emp => {
+                const isPartner = emp.role === 'INDUSTRY_PARTNER'; 
+                return (
+                  <tr key={emp.id} className={`border-b dark:border-gray-700 ${isPartner ? 'bg-blue-50/30 dark:bg-blue-900/10' : ''}`}>
+                      <td className="p-2">
+                        <div className="font-bold dark:text-white">{emp.firstName} {emp.lastName}</div>
+                        {isPartner && (
+                          <div className="text-[9px] text-blue-500 font-bold uppercase flex items-center gap-1">
+                            <Briefcase size={10}/> {emp.companyName || 'External Partner'}
+                          </div>
                         )}
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
+                      </td>
+                      
+                      {editingEmp === emp.id ? (
+                        <>
+                          <td className="p-2">
+                            {isPartner ? <span className="text-xs text-gray-400 italic">Locked</span> : 
+                            <input type="number" value={editEmpForm.plannedProgramBudget} onChange={e=>setEditEmpForm({...editEmpForm, plannedProgramBudget: parseFloat(e.target.value)})} className="border p-1 w-24 text-black" />}
+                          </td>
+                          <td className="p-2">
+                            {isPartner ? <span className="text-xs text-gray-400 italic">N/A</span> : 
+                            <input type="number" value={editEmpForm.fteOperationalHours} onChange={e=>setEditEmpForm({...editEmpForm, fteOperationalHours: parseFloat(e.target.value)})} className="border p-1 w-24 text-black" />}
+                          </td>
+                          <td className="p-2">
+                            <input type="number" value={editEmpForm.wage} onChange={e=>setEditEmpForm({...editEmpForm, wage: parseFloat(e.target.value)})} className="border p-1 w-24 text-black" />
+                          </td>
+                          <td className="p-2"><button onClick={saveEmpEdit} className="text-green-500"><Save size={16}/></button></td>
+                        </>
+                      ) : (
+                        <>
+                          <td className="p-2 dark:text-white font-bold">
+                            {isPartner ? <span className="text-[10px] bg-blue-100 text-blue-700 px-2 py-1 rounded">CONTRACTUAL</span> : `$${emp.plannedProgramBudget?.toLocaleString()}`}
+                          </td>
+                          <td className="p-2 dark:text-white">{emp.fteOperationalHours}</td>
+                          <td className="p-2 dark:text-white font-mono text-green-600">${emp.wage}/hr</td>
+                          <td className="p-2"><button onClick={()=>{setEditingEmp(emp.id); setEditEmpForm(emp)}} className="text-blue-500"><Edit2 size={16}/></button></td>
+                        </>
+                      )}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       {activeTab === 'config' && (
         <div className="bg-white dark:bg-ramp-surface p-6 rounded shadow">
